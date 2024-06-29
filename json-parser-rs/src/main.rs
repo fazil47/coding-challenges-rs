@@ -350,4 +350,9 @@ mod tests {
     fn test_step_4() {
         test_step("./tests/step4");
     }
+
+    #[test]
+    fn test_full() {
+        test_step("./tests/full");
+    }
 }
