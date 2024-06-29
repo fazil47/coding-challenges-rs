@@ -317,16 +317,21 @@ mod tests {
             let entry = entry.unwrap();
             let path = entry.path();
             let path_str = path.to_str().unwrap();
-            let valid = entry
-                .file_name()
-                .into_string()
-                .unwrap()
-                .starts_with("valid");
+            let filename = entry.file_name().into_string().unwrap();
+            let valid = filename.starts_with("valid");
 
             if valid {
-                assert!(parse_json(path_str).is_ok(), "Failed to parse: {}", path_str);
+                assert!(
+                    parse_json(path_str).is_ok(),
+                    "Failed to parse: {}",
+                    filename
+                );
             } else {
-                assert!(parse_json(path_str).is_err(), "Unexpectedly parsed: {}", path_str);
+                assert!(
+                    parse_json(path_str).is_err(),
+                    "Unexpectedly parsed: {}",
+                    filename
+                );
             }
         });
     }
