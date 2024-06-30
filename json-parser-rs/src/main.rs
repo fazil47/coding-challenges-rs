@@ -60,10 +60,16 @@ impl<'a> Parser<'a> {
 
     fn parse(&mut self) -> Result<JsonValue, ParseError> {
         self.skip_whitespace();
-        match self.peek() {
+        let res = match self.peek() {
             Some('{') => self.parse_object(),
             None => Err(ParseError::UnexpectedEndOfInput),
             _ => Err(ParseError::UnexpectedToken(self.position)),
+        };
+
+        self.skip_whitespace();
+        match self.peek() {
+            Some(_) => Err(ParseError::UnexpectedToken(self.position)),
+            None => res,
         }
     }
 
@@ -77,7 +83,7 @@ impl<'a> Parser<'a> {
             '"' => self.parse_string(),
             't' | 'f' => self.parse_boolean(),
             'n' => self.parse_null(),
-            c if c.is_digit(10) || c == '-' => self.parse_number(),
+            c if (c.is_digit(10) && c != '0') || c == '-' => self.parse_number(),
             _ => Err(ParseError::UnexpectedToken(self.position)),
         }
     }
