@@ -170,6 +170,36 @@ impl<'a> Parser<'a> {
         loop {
             match self.consume() {
                 Some('"') => break,
+
+                // Handle escape characters
+                Some('\\') => match self.consume() {
+                    Some('"') => s.push('"'),
+                    Some('\\') => s.push('\\'),
+                    Some('/') => s.push('/'),
+                    Some('b') => s.push('\u{0008}'),
+                    Some('f') => s.push('\u{000C}'),
+                    Some('n') => s.push('\n'),
+                    Some('r') => s.push('\r'),
+                    Some('t') => s.push('\t'),
+                    Some('u') => {
+                        let mut hex = String::new();
+                        for _ in 0..4 {
+                            match self.consume() {
+                                Some(c) if c.is_digit(16) => hex.push(c),
+                                Some(_) => return Err(ParseError::UnexpectedToken(self.position)),
+                                None => return Err(ParseError::UnexpectedEndOfInput),
+                            }
+                        }
+                        let codepoint = u32::from_str_radix(&hex, 16).unwrap();
+                        match std::char::from_u32(codepoint) {
+                            Some(c) => s.push(c),
+                            None => return Err(ParseError::UnexpectedToken(self.position)),
+                        }
+                    }
+                    Some(_) => return Err(ParseError::UnexpectedToken(self.position)),
+                    None => return Err(ParseError::UnexpectedEndOfInput),
+                },
+
                 Some(c) => s.push(c),
                 None => return Err(ParseError::UnexpectedEndOfInput),
             }
