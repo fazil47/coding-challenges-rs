@@ -62,6 +62,7 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         let res = match self.peek() {
             Some('{') => self.parse_object(),
+            Some('[') => self.parse_array(),
             None => Err(ParseError::UnexpectedEndOfInput),
             _ => Err(ParseError::UnexpectedToken(self.position)),
         };
