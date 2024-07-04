@@ -4,7 +4,7 @@ use std::fmt::Error;
 enum JsonValue {
     Null,
     Boolean(bool),
-    Number(i32),
+    Number(f32),
     String(String),
     Array(Vec<JsonValue>),
     Object(IndexMap<String, JsonValue>),
@@ -45,13 +45,17 @@ impl ToString for JsonValue {
 enum ParseError {
     UnexpectedToken(usize),
     UnexpectedEndOfInput,
-    TrailingComma,
+    TrailingComma(usize),
+    MaxDepthExceeded(usize),
+    LeadingZero(usize),
 }
 
 struct Parser<'a> {
     input: &'a str,
     position: usize,
 }
+
+const MAX_DEPTH: u32 = 20;
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
@@ -61,8 +65,8 @@ impl<'a> Parser<'a> {
     fn parse(&mut self) -> Result<JsonValue, ParseError> {
         self.skip_whitespace();
         let res = match self.peek() {
-            Some('{') => self.parse_object(),
-            Some('[') => self.parse_array(),
+            Some('{') => self.parse_object(0),
+            Some('[') => self.parse_array(0),
             None => Err(ParseError::UnexpectedEndOfInput),
             _ => Err(ParseError::UnexpectedToken(self.position)),
         };
@@ -74,22 +78,30 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_value(&mut self) -> Result<JsonValue, ParseError> {
+    fn parse_value(&mut self, depth: u32) -> Result<JsonValue, ParseError> {
+        if depth >= MAX_DEPTH {
+            return Err(ParseError::MaxDepthExceeded(self.position));
+        }
+
         self.skip_whitespace();
         let c = self.peek().ok_or(ParseError::UnexpectedEndOfInput)?;
         // Match object, string, boolean, null and number
         match c {
-            '{' => self.parse_object(),
-            '[' => self.parse_array(),
+            '{' => self.parse_object(depth),
+            '[' => self.parse_array(depth),
             '"' => self.parse_string(),
             't' | 'f' => self.parse_boolean(),
             'n' => self.parse_null(),
-            c if (c.is_digit(10) && c != '0') || c == '-' => self.parse_number(),
+            c if c.is_digit(10) || c == '-' => self.parse_number(),
             _ => Err(ParseError::UnexpectedToken(self.position)),
         }
     }
 
-    fn parse_object(&mut self) -> Result<JsonValue, ParseError> {
+    fn parse_object(&mut self, depth: u32) -> Result<JsonValue, ParseError> {
+        if depth >= MAX_DEPTH {
+            return Err(ParseError::MaxDepthExceeded(self.position));
+        }
+
         let mut object: IndexMap<String, JsonValue> = IndexMap::new();
         self.consume(); // consume '{'
 
@@ -111,7 +123,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(); // consume ':'
 
-                let value = self.parse_value()?;
+                let value = self.parse_value(depth + 1)?;
                 object.insert(key, value);
 
                 self.skip_whitespace();
@@ -120,7 +132,7 @@ impl<'a> Parser<'a> {
                     Some(',') => {
                         self.skip_whitespace();
                         if self.peek() == Some('}') {
-                            return Err(ParseError::TrailingComma);
+                            return Err(ParseError::TrailingComma(self.position));
                         }
                         continue;
                     }
@@ -132,7 +144,11 @@ impl<'a> Parser<'a> {
         Ok(JsonValue::Object(object))
     }
 
-    fn parse_array(&mut self) -> Result<JsonValue, ParseError> {
+    fn parse_array(&mut self, depth: u32) -> Result<JsonValue, ParseError> {
+        if depth >= MAX_DEPTH {
+            return Err(ParseError::MaxDepthExceeded(self.position));
+        }
+
         let mut array: Vec<JsonValue> = Vec::new();
         self.consume(); // consume '['
 
@@ -143,7 +159,7 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            let value = self.parse_value()?;
+            let value = self.parse_value(depth + 1)?;
             array.push(value);
 
             self.skip_whitespace();
@@ -152,7 +168,7 @@ impl<'a> Parser<'a> {
                 Some(',') => {
                     self.skip_whitespace();
                     if self.peek() == Some(']') {
-                        return Err(ParseError::TrailingComma);
+                        return Err(ParseError::TrailingComma(self.position));
                     }
                     continue;
                 }
@@ -170,6 +186,11 @@ impl<'a> Parser<'a> {
         loop {
             match self.consume() {
                 Some('"') => break,
+
+                // Error if tab, newline, or carriage return is not escaped
+                Some('\t') | Some('\n') | Some('\r') => {
+                    return Err(ParseError::UnexpectedToken(self.position))
+                }
 
                 // Handle escape characters
                 Some('\\') => match self.consume() {
@@ -251,6 +272,7 @@ impl<'a> Parser<'a> {
     fn parse_number(&mut self) -> Result<JsonValue, ParseError> {
         let mut s = String::new();
         let mut is_negative = false;
+        let mut is_float = false;
 
         if self.peek() == Some('-') {
             s.push('-');
@@ -263,6 +285,33 @@ impl<'a> Parser<'a> {
                 Some(c) if c.is_digit(10) => {
                     s.push(c);
                     self.consume();
+
+                    match self.peek() {
+                        Some('.') => {
+                            self.consume();
+                            s.push(c);
+                            is_float = true;
+                        }
+                        Some('e') | Some('E') => {
+                            self.consume();
+                            s.push(c);
+
+                            match self.peek() {
+                                Some('+') | Some('-') => {
+                                    s.push(c);
+                                    self.consume();
+                                }
+                                _ => (),
+                            }
+
+                            match self.peek() {
+                                Some(c) if c.is_digit(10) => (),
+                                Some(_) => return Err(ParseError::UnexpectedToken(self.position)),
+                                None => return Err(ParseError::UnexpectedEndOfInput),
+                            }
+                        }
+                        _ => (),
+                    }
                 }
                 _ => break,
             }
@@ -272,7 +321,11 @@ impl<'a> Parser<'a> {
             return Err(ParseError::UnexpectedToken(self.position));
         }
 
-        let number = i32::from_str_radix(&s, 10).unwrap();
+        if !is_float && s.len() > 1 && (s.starts_with('0') || s.starts_with("-0")) {
+            return Err(ParseError::LeadingZero(self.position));
+        }
+
+        let number: f32 = s.parse().unwrap();
         Ok(JsonValue::Number(number))
     }
 
@@ -297,9 +350,9 @@ impl<'a> Parser<'a> {
 }
 
 fn parse_json(file_path: &str) -> Result<(), Error> {
-    let file =
+    let file: Vec<u8> =
         std::fs::read(file_path).expect(format!("Invalid file path: {}", file_path).as_str());
-    let json = std::str::from_utf8(file.as_slice())
+    let json: &str = std::str::from_utf8(file.as_slice())
         .expect(format!("Invalid content for file: {}", file_path).as_str());
 
     if json.len() == 0 {
@@ -311,8 +364,9 @@ fn parse_json(file_path: &str) -> Result<(), Error> {
     match parser.parse() {
         Ok(json) => {
             match json {
-                JsonValue::Object(_) => println!("{}", json.to_string()),
-                _ => eprintln!("Invalid JSON object"),
+                JsonValue::Object(_) => println!("Valid JSON: {}", json.to_string()),
+                JsonValue::Array(_) => println!("Valid JSON: {}", json.to_string()),
+                _ => eprintln!("Invalid JSON"),
             }
 
             Ok(())
@@ -320,13 +374,58 @@ fn parse_json(file_path: &str) -> Result<(), Error> {
         Err(err) => {
             match err {
                 ParseError::UnexpectedToken(pos) => {
-                    eprintln!("Unexpected token at position {}", pos);
+                    eprintln!(
+                        "\n\
+                        Unexpected token at position {}:\n\
+                        {}\n\
+                        {}^\n",
+                        pos,
+                        &json,
+                        " ".repeat(pos),
+                    );
                 }
                 ParseError::UnexpectedEndOfInput => {
-                    eprintln!("Unexpected end of input");
+                    eprintln!(
+                        "\n\
+                        Unexpected end of input:\n\
+                        {}\n\
+                        {}^\n",
+                        &json,
+                        " ".repeat(json.len() - 1),
+                    );
                 }
-                ParseError::TrailingComma => {
-                    eprintln!("Trailing comma");
+                ParseError::TrailingComma(pos) => {
+                    eprintln!(
+                        "\n\
+                        Trailing comma at position {}:\n\
+                        {}\n\
+                        {}^\n",
+                        pos,
+                        &json,
+                        " ".repeat(pos),
+                    );
+                }
+                ParseError::MaxDepthExceeded(pos) => {
+                    eprintln!(
+                        "\n\
+                        Max depth exceeded at position {}:\n\
+                        {}\n\
+                        {}^\n",
+                        pos,
+                        &json,
+                        " ".repeat(pos),
+                    );
+                }
+                ParseError::LeadingZero(pos) => {
+                    eprintln!(
+                        "\n\
+                        Leading zero at position {}:\n\
+                        {}\n\
+                        {}^\n",
+                        pos,
+                        &json,
+                        " ".repeat(pos),
+                    );
                 }
             }
             Err(Error)
