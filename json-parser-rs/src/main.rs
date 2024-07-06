@@ -71,10 +71,12 @@ impl<'a> Parser<'a> {
             _ => Err(ParseError::UnexpectedToken(self.position)),
         };
 
+        let res = res?;
+
         self.skip_whitespace();
         match self.peek() {
             Some(_) => Err(ParseError::UnexpectedToken(self.position)),
-            None => res,
+            None => Ok(res),
         }
     }
 
@@ -112,6 +114,12 @@ impl<'a> Parser<'a> {
                 break;
             }
 
+            self.skip_whitespace();
+
+            if self.peek() != Some('"') {
+                return Err(ParseError::UnexpectedToken(self.position));
+            }
+
             if let JsonValue::String(key) = self.parse_string()? {
                 self.skip_whitespace();
 
@@ -132,7 +140,7 @@ impl<'a> Parser<'a> {
                     Some(',') => {
                         self.skip_whitespace();
                         if self.peek() == Some('}') {
-                            return Err(ParseError::TrailingComma(self.position));
+                            return Err(ParseError::TrailingComma(self.position - 1));
                         }
                         continue;
                     }
@@ -168,7 +176,7 @@ impl<'a> Parser<'a> {
                 Some(',') => {
                     self.skip_whitespace();
                     if self.peek() == Some(']') {
-                        return Err(ParseError::TrailingComma(self.position));
+                        return Err(ParseError::TrailingComma(self.position - 1));
                     }
                     continue;
                 }
@@ -347,6 +355,53 @@ impl<'a> Parser<'a> {
             self.consume();
         }
     }
+
+    fn print_error_position_message(&self, msg: &str, pos: usize) {
+        let (line, column) = self.position_to_line_and_column(pos);
+        eprintln!(
+            "\n\
+            {} at position {}:\n\
+            {}\n\
+            {}^\n",
+            msg,
+            pos,
+            self.get_input_till_line(line),
+            " ".repeat(column)
+        );
+    }
+
+    fn get_input_till_line(&self, line: usize) -> &str {
+        let mut pos = self.input.len();
+        let mut line_count = 1;
+
+        for (i, c) in self.input.chars().enumerate() {
+            if c == '\n' {
+                line_count += 1;
+                if line_count == line {
+                    pos = i;
+                    break;
+                }
+            }
+        }
+
+        &self.input[0..pos]
+    }
+
+    fn position_to_line_and_column(&self, pos: usize) -> (usize, usize) {
+        let (mut line, mut column) = (0, 0);
+
+        for c in self.input.chars().take(pos) {
+            match c {
+                '\n' => {
+                    line += 1;
+                    column = 1;
+                }
+                _ => column += 1,
+            }
+        }
+
+        (line, column)
+    }
 }
 
 fn parse_json(file_path: &str) -> Result<(), Error> {
@@ -374,58 +429,19 @@ fn parse_json(file_path: &str) -> Result<(), Error> {
         Err(err) => {
             match err {
                 ParseError::UnexpectedToken(pos) => {
-                    eprintln!(
-                        "\n\
-                        Unexpected token at position {}:\n\
-                        {}\n\
-                        {}^\n",
-                        pos,
-                        &json,
-                        " ".repeat(pos),
-                    );
+                    parser.print_error_position_message("Unexpected token", pos);
                 }
                 ParseError::UnexpectedEndOfInput => {
-                    eprintln!(
-                        "\n\
-                        Unexpected end of input:\n\
-                        {}\n\
-                        {}^\n",
-                        &json,
-                        " ".repeat(json.len() - 1),
-                    );
+                    parser.print_error_position_message("Unexpected end of input", json.len() - 1);
                 }
                 ParseError::TrailingComma(pos) => {
-                    eprintln!(
-                        "\n\
-                        Trailing comma at position {}:\n\
-                        {}\n\
-                        {}^\n",
-                        pos,
-                        &json,
-                        " ".repeat(pos),
-                    );
+                    parser.print_error_position_message("Trailing comma", pos);
                 }
                 ParseError::MaxDepthExceeded(pos) => {
-                    eprintln!(
-                        "\n\
-                        Max depth exceeded at position {}:\n\
-                        {}\n\
-                        {}^\n",
-                        pos,
-                        &json,
-                        " ".repeat(pos),
-                    );
+                    parser.print_error_position_message("Max depth exceeded", pos);
                 }
                 ParseError::LeadingZero(pos) => {
-                    eprintln!(
-                        "\n\
-                        Leading zero at position {}:\n\
-                        {}\n\
-                        {}^\n",
-                        pos,
-                        &json,
-                        " ".repeat(pos),
-                    );
+                    parser.print_error_position_message("Leading zero at position", pos);
                 }
             }
             Err(Error)
