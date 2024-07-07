@@ -48,6 +48,7 @@ enum ParseError {
     TrailingComma(usize),
     MaxDepthExceeded(usize),
     LeadingZero(usize),
+    UnescapedControlCharacter(usize),
 }
 
 struct Parser<'a> {
@@ -139,12 +140,14 @@ impl<'a> Parser<'a> {
                     Some('}') => break,
                     Some(',') => {
                         self.skip_whitespace();
-                        if self.peek() == Some('}') {
-                            return Err(ParseError::TrailingComma(self.position - 1));
+                        match self.peek() {
+                            Some('}') => return Err(ParseError::TrailingComma(self.position - 1)),
+                            None => return Err(ParseError::UnexpectedEndOfInput),
+                            _ => continue,
                         }
-                        continue;
                     }
-                    _ => return Err(ParseError::UnexpectedEndOfInput),
+                    None => return Err(ParseError::UnexpectedEndOfInput),
+                    _ => return Err(ParseError::UnexpectedToken(self.position - 1)),
                 }
             }
         }
@@ -180,7 +183,8 @@ impl<'a> Parser<'a> {
                     }
                     continue;
                 }
-                _ => return Err(ParseError::UnexpectedEndOfInput),
+                None => return Err(ParseError::UnexpectedEndOfInput),
+                _ => return Err(ParseError::UnexpectedToken(self.position - 1)),
             }
         }
 
@@ -197,7 +201,7 @@ impl<'a> Parser<'a> {
 
                 // Error if tab, newline, or carriage return is not escaped
                 Some('\t') | Some('\n') | Some('\r') => {
-                    return Err(ParseError::UnexpectedToken(self.position))
+                    return Err(ParseError::UnescapedControlCharacter(self.position - 1))
                 }
 
                 // Handle escape characters
@@ -215,7 +219,9 @@ impl<'a> Parser<'a> {
                         for _ in 0..4 {
                             match self.consume() {
                                 Some(c) if c.is_digit(16) => hex.push(c),
-                                Some(_) => return Err(ParseError::UnexpectedToken(self.position)),
+                                Some(_) => {
+                                    return Err(ParseError::UnexpectedToken(self.position - 1))
+                                }
                                 None => return Err(ParseError::UnexpectedEndOfInput),
                             }
                         }
@@ -225,7 +231,7 @@ impl<'a> Parser<'a> {
                             None => return Err(ParseError::UnexpectedToken(self.position)),
                         }
                     }
-                    Some(_) => return Err(ParseError::UnexpectedToken(self.position)),
+                    Some(_) => return Err(ParseError::UnexpectedToken(self.position - 1)),
                     None => return Err(ParseError::UnexpectedEndOfInput),
                 },
 
@@ -253,7 +259,7 @@ impl<'a> Parser<'a> {
         match s.as_str() {
             "true" => Ok(JsonValue::Boolean(true)),
             "false" => Ok(JsonValue::Boolean(false)),
-            _ => Err(ParseError::UnexpectedToken(self.position)),
+            _ => Err(ParseError::UnexpectedToken(self.position - s.len())),
         }
     }
 
@@ -293,6 +299,7 @@ impl<'a> Parser<'a> {
                 Some(c) if c.is_digit(10) => {
                     s.push(c);
                     self.consume();
+                    self.skip_whitespace();
 
                     match self.peek() {
                         Some('.') => {
@@ -303,6 +310,7 @@ impl<'a> Parser<'a> {
                         Some('e') | Some('E') => {
                             self.consume();
                             s.push(c);
+                            self.skip_whitespace();
 
                             match self.peek() {
                                 Some('+') | Some('-') => {
@@ -330,7 +338,7 @@ impl<'a> Parser<'a> {
         }
 
         if !is_float && s.len() > 1 && (s.starts_with('0') || s.starts_with("-0")) {
-            return Err(ParseError::LeadingZero(self.position));
+            return Err(ParseError::LeadingZero(self.position - s.len()));
         }
 
         let number: f32 = s.parse().unwrap();
@@ -372,15 +380,15 @@ impl<'a> Parser<'a> {
 
     fn get_input_till_line(&self, line: usize) -> &str {
         let mut pos = self.input.len();
-        let mut line_count = 1;
+        let mut line_count = 0;
 
         for (i, c) in self.input.chars().enumerate() {
             if c == '\n' {
-                line_count += 1;
                 if line_count == line {
                     pos = i;
                     break;
                 }
+                line_count += 1;
             }
         }
 
@@ -441,7 +449,10 @@ fn parse_json(file_path: &str) -> Result<(), Error> {
                     parser.print_error_position_message("Max depth exceeded", pos);
                 }
                 ParseError::LeadingZero(pos) => {
-                    parser.print_error_position_message("Leading zero at position", pos);
+                    parser.print_error_position_message("Leading zero", pos);
+                }
+                ParseError::UnescapedControlCharacter(pos) => {
+                    parser.print_error_position_message("Unescaped control character", pos);
                 }
             }
             Err(Error)
